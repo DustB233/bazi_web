@@ -187,13 +187,6 @@ export default function Home() {
         </div>
       </div>
 
-      <div style={{ marginBottom: 12, opacity: 0.8 }}>
-        <div style={{ fontSize: 12 }}>Request payload preview:</div>
-        <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, border: "1px solid #222", padding: 12, borderRadius: 10 }}>
-          {JSON.stringify(payload, null, 2)}
-        </pre>
-      </div>
-
       {error && (
         <div style={{ border: "1px solid #5a1a1a", padding: 12, borderRadius: 10, marginBottom: 12 }}>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>Error</div>
