@@ -208,12 +208,14 @@ export default function Home() {
             <pre style={{ whiteSpace: "pre-wrap" }}>{data.analysis ?? "(no analysis field returned)"}</pre>
           </div>
 
-          <div style={{ border: "1px solid #333", padding: 12, borderRadius: 10 }}>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>BaZi JSON</div>
-            <pre style={{ whiteSpace: "pre-wrap", fontSize: 12 }}>
-              {JSON.stringify(data.bazi ?? data, null, 2)}
-            </pre>
-          </div>
+          {process.env.NODE_ENV === "development" && (
+            <div style={{ border: "1px solid #333", padding: 12, borderRadius: 10 }}>
+              <div style={{ fontWeight: 700, marginBottom: 8 }}>BaZi JSON (dev only)</div>
+               <pre style={{ whiteSpace: "pre-wrap", fontSize: 12 }}>
+                   {JSON.stringify(data.bazi ?? data, null, 2)}
+               </pre>
+            </div>
+          )}
         </div>
       )}
     </main>
