@@ -5,7 +5,7 @@ const isProtectedRoute = createRouteMatcher(["/generate(.*)"]);
 
 export default clerkMiddleware((auth, req) => {
   if (isProtectedRoute(req)) {
-    auth().protect(); // ✅ 这里 Clerk middleware 的 auth() 是可用的（正确写法在 middleware 回调里）
+    auth.protect();
   }
 });
 
