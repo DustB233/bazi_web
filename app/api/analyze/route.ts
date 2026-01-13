@@ -1,119 +1,82 @@
 import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import OpenAI from "openai";
 
-function extractOutputText(responseJson: any): string {
-  // Responses API often provides output_text
-  if (typeof responseJson?.output_text === "string") return responseJson.output_text;
-
-  // Fallback: try to walk the structure
-  const out = responseJson?.output;
-  if (Array.isArray(out)) {
-    const parts: string[] = [];
-    for (const item of out) {
-      const content = item?.content;
-      if (Array.isArray(content)) {
-        for (const c of content) {
-          const t = c?.text;
-          if (typeof t === "string") parts.push(t);
-          if (typeof t?.value === "string") parts.push(t.value);
-        }
-      }
-    }
-    if (parts.length) return parts.join("\n");
-  }
-  return "";
-}
+export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  // Only allow “Compute + Analyze” for signed-in users
-  const a = await auth();
-  if (!a.userId) {
+  try {
+    const BAZI_API_BASE = process.env.BAZI_API_BASE;
+    const BAZI_API_TOKEN = process.env.BAZI_API_TOKEN;
+    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+    if (!BAZI_API_BASE || !BAZI_API_TOKEN || !OPENAI_API_KEY) {
+      return NextResponse.json(
+        { error: "Missing env vars: BAZI_API_BASE / BAZI_API_TOKEN / OPENAI_API_KEY" },
+        { status: 500 }
+      );
+    }
+
+    const body = await req.json();
+
+    // 1) Call your BaZi compute endpoint (your existing backend)
+    const computeRes = await fetch(`${BAZI_API_BASE}/bazi/compute`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${BAZI_API_TOKEN}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    const computeText = await computeRes.text();
+    if (!computeRes.ok) {
+      return NextResponse.json(
+        { error: `BaZi compute failed (${computeRes.status})`, detail: computeText },
+        { status: 400 }
+      );
+    }
+
+    let computeJson: any = null;
+    try {
+      computeJson = JSON.parse(computeText);
+    } catch {
+      // If backend returns text, still send it to the model
+      computeJson = { raw: computeText };
+    }
+
+    // 2) Send compute output to OpenAI for interpretation
+    const client = new OpenAI({ apiKey: OPENAI_API_KEY });
+
+    const prompt = `
+You are a BaZi (八字) analyst. Use the computed output below to produce a clean, user-facing reading.
+
+Requirements:
+- Start with "真太阳时" and key pillars summary if present
+- Then give 6–10 bullet insights (personality, strengths, challenges)
+- Then give 3 practical suggestions (career/relationships/health in general terms)
+- Avoid showing raw JSON; write for a normal user.
+
+Computed output:
+${JSON.stringify(computeJson, null, 2)}
+`.trim();
+
+    const r = await client.responses.create({
+      model: "gpt-5",
+      input: prompt,
+    });
+
+    // responses API returns content in output_text
+    // (this is the recommended SDK path) :contentReference[oaicite:3]{index=3}
+    const analysis = (r as any).output_text ?? "";
+
+    return NextResponse.json({
+      analysis,
+    });
+  } catch (e: any) {
     return NextResponse.json(
-      { error: "UNAUTHENTICATED", signInUrl: "/sign-in?redirect_url=/generate" },
-      { status: 401 }
-    );
-  }
-
-  const body = await req.json().catch(() => null);
-  if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-
-  const apiBase = process.env.BAZI_API_BASE;
-  const baziToken = process.env.BAZI_API_TOKEN;
-  const openaiKey = process.env.OPENAI_API_KEY;
-
-  if (!apiBase || !baziToken || !openaiKey) {
-    return NextResponse.json(
-      { error: "Missing env vars: BAZI_API_BASE / BAZI_API_TOKEN / OPENAI_API_KEY" },
+      { error: e?.message || "Unknown error" },
       { status: 500 }
     );
   }
-
-  // 1) Call your BaZi compute backend
-  const baziResp = await fetch(`${apiBase}/bazi/compute`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${baziToken}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  const baziJson = await baziResp.json().catch(() => null);
-  if (!baziResp.ok) {
-    return NextResponse.json(
-      { error: "BAZI_BACKEND_ERROR", status: baziResp.status, detail: baziJson },
-      { status: baziResp.status }
-    );
-  }
-
-  // 2) Call OpenAI to generate interpretation
-  const systemPrompt = `You are a BaZi (八字) assistant.
-Write a clear, structured reading in English (can include Chinese terms).
-Be practical: personality tendencies, career themes, relationship style, and timing notes if present.
-Avoid absolute claims; present as guidance.`;
-
-  const userPrompt = `Here is the computed BaZi result JSON. Interpret it:
-
-${JSON.stringify(baziJson, null, 2)}
-`;
-
-  const oaiResp = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${openaiKey}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4.1-mini",
-      input: [
-        {
-          role: "system",
-          content: [{ type: "text", text: systemPrompt }],
-        },
-        {
-          role: "user",
-          content: [{ type: "text", text: userPrompt }],
-        },
-      ],
-    }),
-  });
-
-  const oaiJson = await oaiResp.json().catch(() => null);
-  if (!oaiResp.ok) {
-    return NextResponse.json(
-      { error: "OPENAI_ERROR", status: oaiResp.status, detail: oaiJson },
-      { status: 500 }
-    );
-  }
-
-  const analysis = extractOutputText(oaiJson);
-
-  return NextResponse.json({
-    analysis,
-    // Optional return computed fields for debugging / later UI
-    bazi: baziJson?.bazi ?? baziJson,
-    times: baziJson?.times,
-    resolved: baziJson?.resolved,
-  });
 }
 

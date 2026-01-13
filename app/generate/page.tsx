@@ -1,4 +1,4 @@
-import BaziClient from "@/components/BaziClient";
+import BaziClient from "../../components/BaziClient";
 
 export default function GeneratePage() {
   return (
@@ -10,4 +10,3 @@ export default function GeneratePage() {
     </main>
   );
 }
-

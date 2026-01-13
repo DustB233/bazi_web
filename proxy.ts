@@ -1,5 +1,22 @@
-import { clerkMiddleware } from "@clerk/nextjs/server";
+import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
-// Keep it simple: attach Clerk, but don't "protect" pages here.
-// We do auth enforcement inside /api/analyze (so Generate page stays public).
-export default clerkMiddleware();
+// Only protect your API (so the /generate page can load publicly)
+const isProtectedRoute = createRouteMatcher([
+  "/api/bazi(.*)",
+  "/api/analyze(.*)",
+]);
+
+export default clerkMiddleware(async (auth, req) => {
+  if (isProtectedRoute(req)) {
+    await auth.protect();
+  }
+});
+
+export const config = {
+  matcher: [
+    // Skip Next internals + static files
+    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
+    // Always run for API routes
+    "/(api|trpc)(.*)",
+  ],
+};
