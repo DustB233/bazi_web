@@ -1,105 +1,119 @@
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 
-export async function POST(req: Request) {
-  const { userId } = await auth();
-  if (!userId) {
-    return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
+function extractOutputText(responseJson: any): string {
+  // Responses API often provides output_text
+  if (typeof responseJson?.output_text === "string") return responseJson.output_text;
+
+  // Fallback: try to walk the structure
+  const out = responseJson?.output;
+  if (Array.isArray(out)) {
+    const parts: string[] = [];
+    for (const item of out) {
+      const content = item?.content;
+      if (Array.isArray(content)) {
+        for (const c of content) {
+          const t = c?.text;
+          if (typeof t === "string") parts.push(t);
+          if (typeof t?.value === "string") parts.push(t.value);
+        }
+      }
+    }
+    if (parts.length) return parts.join("\n");
   }
-  try {
-    const body = await req.json();
+  return "";
+}
 
-    const baziApiBase = process.env.BAZI_API_BASE;
-    const baziToken = process.env.BAZI_API_TOKEN;
-    const openaiKey = process.env.OPENAI_API_KEY;
-
-    if (!baziApiBase || !baziToken || !openaiKey) {
-      return NextResponse.json(
-        { error: "Missing env vars: BAZI_API_BASE / BAZI_API_TOKEN / OPENAI_API_KEY" },
-        { status: 500 }
-      );
-    }
-
-    // 1) Call your BaZi compute API
-    const baziResp = await fetch(`${baziApiBase}/bazi/compute`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${baziToken}`,
-      },
-      body: JSON.stringify(body),
-    });
-
-    const baziText = await baziResp.text();
-    if (!baziResp.ok) {
-      return new NextResponse(baziText, { status: baziResp.status });
-    }
-    const baziJson = JSON.parse(baziText);
-
-    // 2) Load your own BaZi knowledge (simple version: local text files)
-    // Put your notes under /bazi_knowledge/*.md and expand later to embeddings/vector DB.
-    // (If you don’t have files yet, set knowledge = "" for now.)
-    const knowledge = `
-# Your BaZi Notes (placeholder)
-- Add your own interpretations, rules, mappings, examples here.
-- Later: replace with embeddings + retrieval for large knowledge bases.
-`;
-
-    // 3) Ask OpenAI to produce the analysis (optionally with web search tool)
-    // Responses API: POST https://api.openai.com/v1/responses :contentReference[oaicite:1]{index=1}
-    const prompt = `
-You are a BaZi (八字) analyst. Use the user's BaZi computation JSON plus my private notes.
-If you use outside facts, be explicit what you searched and why.
-
-Return:
-1) Summary (plain English + Chinese)
-2) Key pillars / ten gods / elements balance (based on provided JSON fields)
-3) Career / study / timing insights (no medical/legal claims)
-4) If uncertain due to missing fields, say what’s missing.
-
-=== My private notes ===
-${knowledge}
-
-=== BaZi JSON output ===
-${JSON.stringify(baziJson, null, 2)}
-`;
-
-    const openaiResp = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${openaiKey}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        input: prompt,
-        // Optional: allow web search inside OpenAI tool system (internet-based)
-        tools: [{ type: "web_search" }],
-        // Optional: include sources in the output (very useful)
-        include: ["web_search_call.action.sources"],
-      }),
-    });
-
-    const out = await openaiResp.json();
-    if (!openaiResp.ok) {
-      return NextResponse.json(out, { status: openaiResp.status });
-    }
-
-    // Extract text safely (Responses API returns structured output)
-    const analysisText =
-      out.output_text ??
-      out.output?.map((x: any) => x?.content?.map((c: any) => c?.text).join("\n")).join("\n") ??
-      JSON.stringify(out);
-
-    return NextResponse.json({
-      bazi: baziJson,
-      analysis: analysisText,
-      raw_openai: out, // keep for debugging; remove later if you want
-    });
-  } catch (e: any) {
+export async function POST(req: Request) {
+  // Only allow “Compute + Analyze” for signed-in users
+  const a = await auth();
+  if (!a.userId) {
     return NextResponse.json(
-      { error: String(e?.message ?? e) },
+      { error: "UNAUTHENTICATED", signInUrl: "/sign-in?redirect_url=/generate" },
+      { status: 401 }
+    );
+  }
+
+  const body = await req.json().catch(() => null);
+  if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+
+  const apiBase = process.env.BAZI_API_BASE;
+  const baziToken = process.env.BAZI_API_TOKEN;
+  const openaiKey = process.env.OPENAI_API_KEY;
+
+  if (!apiBase || !baziToken || !openaiKey) {
+    return NextResponse.json(
+      { error: "Missing env vars: BAZI_API_BASE / BAZI_API_TOKEN / OPENAI_API_KEY" },
       { status: 500 }
     );
   }
+
+  // 1) Call your BaZi compute backend
+  const baziResp = await fetch(`${apiBase}/bazi/compute`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${baziToken}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const baziJson = await baziResp.json().catch(() => null);
+  if (!baziResp.ok) {
+    return NextResponse.json(
+      { error: "BAZI_BACKEND_ERROR", status: baziResp.status, detail: baziJson },
+      { status: baziResp.status }
+    );
+  }
+
+  // 2) Call OpenAI to generate interpretation
+  const systemPrompt = `You are a BaZi (八字) assistant.
+Write a clear, structured reading in English (can include Chinese terms).
+Be practical: personality tendencies, career themes, relationship style, and timing notes if present.
+Avoid absolute claims; present as guidance.`;
+
+  const userPrompt = `Here is the computed BaZi result JSON. Interpret it:
+
+${JSON.stringify(baziJson, null, 2)}
+`;
+
+  const oaiResp = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${openaiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4.1-mini",
+      input: [
+        {
+          role: "system",
+          content: [{ type: "text", text: systemPrompt }],
+        },
+        {
+          role: "user",
+          content: [{ type: "text", text: userPrompt }],
+        },
+      ],
+    }),
+  });
+
+  const oaiJson = await oaiResp.json().catch(() => null);
+  if (!oaiResp.ok) {
+    return NextResponse.json(
+      { error: "OPENAI_ERROR", status: oaiResp.status, detail: oaiJson },
+      { status: 500 }
+    );
+  }
+
+  const analysis = extractOutputText(oaiJson);
+
+  return NextResponse.json({
+    analysis,
+    // Optional return computed fields for debugging / later UI
+    bazi: baziJson?.bazi ?? baziJson,
+    times: baziJson?.times,
+    resolved: baziJson?.resolved,
+  });
 }
+
