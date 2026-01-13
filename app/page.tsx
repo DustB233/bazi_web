@@ -1,6 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { redirect } from "next/navigation";
+
+
 
 type FormState = {
   year: string;
@@ -15,6 +18,7 @@ type FormState = {
 };
 
 export default function Home() {
+  redirect("/generate");
   const [form, setForm] = useState<FormState>({
     year: "2005",
     month: "3",
@@ -25,8 +29,7 @@ export default function Home() {
     country: "China",
     tz: "Asia/Shanghai",
     use_dst: false,
-  });
-
+  })
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<any>(null);
@@ -59,13 +62,17 @@ export default function Home() {
 
       const text = await r.text();
 
-      if (!r.ok) {
-        // show server error text directly (super helpful for debugging)
-        throw new Error(`HTTP ${r.status}: ${text}`);
-      }
+    // ✅ 没登录：跳转到登录页（并带回跳参数）
+    if (r.status === 401) {
+      window.location.href = `/sign-in?redirect_url=${encodeURIComponent("/")}`;
+      return;
+    }
 
-      const json = JSON.parse(text);
-      setData(json);
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${text}`);
+
+    const json = JSON.parse(text);
+    setData(json);
+
     } catch (e: any) {
       setError(String(e?.message ?? e));
     } finally {
